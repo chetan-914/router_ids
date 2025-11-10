@@ -1,0 +1,20 @@
+# Thresholds for rule-based pre-checks
+# Adjust these values based on your network baseline
+
+ddos:
+  # Trigger DDoS model if packet rate exceeds this (packets per interval)
+  packet_rate_threshold: 1000
+  # Or if unique source IPs exceed this
+  unique_src_ips_threshold: 50
+
+mitm:
+  # Trigger MITM model if ARP request ratio exceeds this
+  arp_request_ratio_threshold: 0.5
+  # Or if MAC-IP mismatches exceed this
+  mac_ip_mismatch_threshold: 10
+
+c2c:
+  # Trigger C2C model if average flow duration exceeds this (packets)
+  average_flow_duration_threshold: 300
+  # Or if unique destination ports exceed this
+  unique_dst_ports_threshold: 10

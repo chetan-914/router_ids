@@ -1,0 +1,17 @@
+# Intrusion detection rules for router-ids
+# Each detector can be enabled/disabled and configured with pre-checks
+
+ddos:
+  enabled: true
+  description: "DDoS attack detection"
+  pre_check_enabled: true
+
+mitm:
+  enabled: true
+  description: "Man-in-the-Middle attack detection"
+  pre_check_enabled: true
+
+c2c:
+  enabled: true
+  description: "Command & Control communication detection"
+  pre_check_enabled: true
