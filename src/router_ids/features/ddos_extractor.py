@@ -1,11 +1,7 @@
-"""Feature extractor for DDoS detection."""
-
 import logging
-from collections import Counter
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List
 
-from scapy.layers.inet import IP
-from scapy.layers.l2 import Ether
+from scapy.layers.inet import IP, TCP, UDP
 
 from .base import FeatureExtractor
 
@@ -14,96 +10,97 @@ logger = logging.getLogger(__name__)
 
 class DDoSFeatureExtractor(FeatureExtractor):
     """
-    Extract DDoS-relevant features.
+    Extracts features compatible with the custom DDoSDetector model.
 
-    DDoS indicators:
-    - High packet rate
-    - Many packets from few sources (amplification attacks)
-    - High ratio of packets from single source
-    - Unusual protocol distribution
+    Features:
+    - Packet_Size: Average size of packets.
+    - Packets_Per_Sec: Rate of packets.
+    - Flow_Duration: Duration of the capture window.
+    - Bytes_Per_Sec: Rate of bytes.
+    - Unique_IPs: Count of unique source IP addresses.
+    - Port_Diversity: Count of unique destination ports.
+    - TCP_Ratio: Ratio of TCP packets to total IP packets.
+    - UDP_Ratio: Ratio of UDP packets to total IP packets.
+    - SYN_Flag_Ratio: Ratio of TCP packets with only SYN flag set.
+    - ACK_Flag_Ratio: Ratio of TCP packets with ACK flag set.
     """
 
     def extract(self, packets: List[Any]) -> Dict[str, Any]:
-        """Extract DDoS-specific features."""
+        """Extract DDoS-specific features from a list of scapy packets."""
         if not packets:
             return self._empty_features()
 
-        src_ips: Counter = Counter()
-        dst_ips: Counter = Counter()
-        protocols: Counter = Counter()
+        # Calculate capture duration from packet timestamps
+        try:
+            first_pkt_time = packets[0].time
+            last_pkt_time = packets[-1].time
+            duration = float(last_pkt_time - first_pkt_time)
+            if duration == 0:
+                duration = 1.0  # Avoid division by zero for single-packet captures
+        except (AttributeError, IndexError):
+            duration = 1.0
+
         total_bytes = 0
+        total_packets = len(packets)
+        src_ips = set()
+        dst_ports = set()
+        tcp_count = 0
+        udp_count = 0
+        syn_count = 0
+        ack_count = 0
 
         for pkt in packets:
-            try:
-                if IP in pkt:
-                    src_ips[pkt[IP].src] += 1
-                    dst_ips[pkt[IP].dst] += 1
-                    total_bytes += len(pkt)
-                    
-                    proto = pkt[IP].proto
-                    if proto == 6:
-                        protocols["tcp"] += 1
-                    elif proto == 17:
-                        protocols["udp"] += 1
-                    elif proto == 1:
-                        protocols["icmp"] += 1
-                    else:
-                        protocols["other"] += 1
-            except Exception as e:
-                logger.debug(f"Error processing packet: {e}")
-                continue
+            total_bytes += len(pkt)
+            if IP in pkt:
+                src_ips.add(pkt[IP].src)
+                if TCP in pkt:
+                    tcp_count += 1
+                    dst_ports.add(pkt[TCP].dport)
+                    # Check for pure SYN (S flag without A)
+                    if 'S' in pkt[TCP].flags and 'A' not in pkt[TCP].flags:
+                        syn_count += 1
+                    # Check for ACK
+                    if 'A' in pkt[TCP].flags:
+                        ack_count += 1
+                elif UDP in pkt:
+                    udp_count += 1
+                    dst_ports.add(pkt[UDP].dport)
 
-        num_packets = len(packets)
-        
-        # DDoS-specific features
-        packet_rate = num_packets  # packets per interval
-        unique_src_ips = len(src_ips)
-        unique_dst_ips = len(dst_ips)
-        
-        # Top source IP ratio (high = potential source of attack or amplification)
-        top_src_packets = src_ips.most_common(1) if src_ips else 0
-        top_src_ratio = top_src_packets / num_packets if num_packets > 0 else 0
-        
-        # Top destination IP ratio (high = potential target)
-        top_dst_packets = dst_ips.most_common(1) if dst_ips else 0
-        top_dst_ratio = top_dst_packets / num_packets if num_packets > 0 else 0
+        # --- Feature Calculations ---
+        avg_packet_size = total_bytes / total_packets if total_packets > 0 else 0
+        packets_per_sec = total_packets / duration
+        bytes_per_sec = total_bytes / duration
+        unique_ips = len(src_ips)
+        port_diversity = len(dst_ports)
 
-        # Protocol ratio (high UDP/ICMP ratio may indicate reflection attacks)
-        udp_count = protocols.get("udp", 0)
-        icmp_count = protocols.get("icmp", 0)
-        tcp_count = protocols.get("tcp", 0)
-        
-        udp_ratio = udp_count / num_packets if num_packets > 0 else 0
-        icmp_ratio = icmp_count / num_packets if num_packets > 0 else 0
-        
-        avg_packet_size = total_bytes / num_packets if num_packets > 0 else 0
+        total_ip_packets = tcp_count + udp_count
+        tcp_ratio = tcp_count / total_ip_packets if total_ip_packets > 0 else 0
+        udp_ratio = udp_count / total_ip_packets if total_ip_packets > 0 else 0
+
+        syn_flag_ratio = syn_count / tcp_count if tcp_count > 0 else 0
+        ack_flag_ratio = ack_count / tcp_count if tcp_count > 0 else 0
 
         features = {
-            "packet_rate": packet_rate,
-            "unique_src_ips": unique_src_ips,
-            "unique_dst_ips": unique_dst_ips,
-            "top_src_ratio": top_src_ratio,
-            "top_dst_ratio": top_dst_ratio,
-            "udp_ratio": udp_ratio,
-            "icmp_ratio": icmp_ratio,
-            "tcp_count": tcp_count,
-            "avg_packet_size": avg_packet_size,
-            "total_bytes": total_bytes,
+            'Packet_Size': avg_packet_size,
+            'Packets_Per_Sec': packets_per_sec,
+            'Flow_Duration': duration,
+            'Bytes_Per_Sec': bytes_per_sec,
+            'Unique_IPs': unique_ips,
+            'Port_Diversity': port_diversity,
+            'TCP_Ratio': tcp_ratio,
+            'UDP_Ratio': udp_ratio,
+            'SYN_Flag_Ratio': syn_flag_ratio,
+            'ACK_Flag_Ratio': ack_flag_ratio,
         }
 
         return features
 
     def _empty_features(self) -> Dict[str, Any]:
-        """Return zero-valued features."""
+        """Return zero-valued features for an empty packet list."""
         return {
-            "packet_rate": 0,
-            "unique_src_ips": 0,
-            "unique_dst_ips": 0,
-            "top_src_ratio": 0.0,
-            "top_dst_ratio": 0.0,
-            "udp_ratio": 0.0,
-            "icmp_ratio": 0.0,
-            "tcp_count": 0,
-            "avg_packet_size": 0.0,
-            "total_bytes": 0,
+            'Packet_Size': 0.0, 'Packets_Per_Sec': 0.0,
+            'Flow_Duration': 0.0, 'Bytes_Per_Sec': 0.0,
+            'Unique_IPs': 0, 'Port_Diversity': 0,
+            'TCP_Ratio': 0.0, 'UDP_Ratio': 0.0,
+            'SYN_Flag_Ratio': 0.0, 'ACK_Flag_Ratio': 0.0,
         }

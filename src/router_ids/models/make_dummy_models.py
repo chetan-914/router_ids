@@ -15,38 +15,25 @@ import joblib
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
+from ddos_detector import DDoSDetector
 
 
 def generate_dummy_ddos_model(output_path: str) -> None:
-    """Generate dummy DDoS detection model."""
-    # Create synthetic training data
-    np.random.seed(42)
-    n_samples = 100
+    """
+    Generate dummy DDoS detection model using the custom DDoSDetector class.
+    This will create a synthetic dataset, train a model, and save it
+    along with its scaler and encoders.
+    """
+    print("--- Generating DDoS model with DDoSDetector ---")
+    # Initialize the detector (e.g., with random_forest)
+    detector = DDoSDetector(model_type='random_forest')
     
-    # DDoS features: packet_rate, unique_src_ips, unique_dst_ips, 
-    #                top_src_ratio, top_dst_ratio, udp_ratio, icmp_ratio,
-    #                tcp_count, avg_packet_size, total_bytes
-    X_benign = np.random.normal(
-        loc=[100, 5, 5, 0.1, 0.05, 0.1, 0.05, 50, 100, 10000],
-        scale=[50, 2, 2, 0.05, 0.02, 0.05, 0.02, 20, 30, 5000],
-        size=(n_samples // 2, 10),
-    )
-    X_attack = np.random.normal(
-        loc=[5000, 50, 5, 0.8, 0.3, 0.7, 0.2, 100, 50, 200000],
-        scale=[1000, 10, 2, 0.1, 0.1, 0.1, 0.1, 30, 20, 50000],
-        size=(n_samples // 2, 10),
-    )
+    # Train the model on its built-in synthetic dataset
+    detector.train()
     
-    X = np.vstack([X_benign, X_attack])
-    y = np.hstack([np.zeros(n_samples // 2), np.ones(n_samples // 2)])
-    
-    # Train model
-    model = RandomForestClassifier(n_estimators=10, random_state=42)
-    model.fit(X, y)
-    
-    # Save model
-    joblib.dump(model, output_path)
-    print(f"Generated DDoS model: {output_path}")
+    # Save the complete model object (model, scaler, etc.)
+    detector.save_model(output_path)
+    print(f"Generated DDoS model bundle: {output_path}")
 
 
 def generate_dummy_mitm_model(output_path: str) -> None:
@@ -115,7 +102,7 @@ def main() -> None:
     """Generate all dummy models."""
     # Determine output directory
     script_dir = Path(__file__).parent
-    output_dir = script_dir
+    output_dir = script_dir / "model_joblib"
     
     os.makedirs(output_dir, exist_ok=True)
     

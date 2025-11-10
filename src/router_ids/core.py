@@ -54,7 +54,7 @@ class CoreManager:
         self.thresholds_path = (
             thresholds_path or str(base_dir / "rules" / "thresholds.yaml")
         )
-        self.models_dir = models_dir or str(base_dir / "src" / "router_ids" / "models")
+        self.models_dir = models_dir or str(base_dir / "src" / "router_ids" / "models" / "model_joblib")
 
         # Load configuration
         self.rules = self._load_yaml(self.rules_path)

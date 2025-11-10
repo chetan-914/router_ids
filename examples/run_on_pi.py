@@ -29,7 +29,7 @@ logger = setup_logger(__name__)
 
 
 def capture_traffic(
-    output_file: str, duration: int = 30, interface: str = "eth0"
+    output_file: str, duration: int = 30, interface: str = "wlan0"
 ) -> bool:
     """
     Capture network traffic using tcpdump.
@@ -133,16 +133,19 @@ def main() -> None:
     
     # Configuration
     capture_duration = 30  # seconds
-    network_interface = "eth0"  # Change to your interface (e.g., wlan0)
+    network_interface = "wlan0"  # Change to your interface (e.g., wlan0)
     pcap_file = "/tmp/router_ids_capture.pcap"
     
     try:
         # Step 1: Generate dummy models (if not present)
-        models_dir = Path(__file__).parent.parent / "src" / "router_ids" / "models"
+        # --- UPDATED PATHS ---
+        models_base_dir = Path(__file__).parent.parent / "src" / "router_ids" / "models"
+        models_joblib_dir = models_base_dir / "model_joblib"
+
         model_files = [
-            models_dir / "ddos_model.joblib",
-            models_dir / "mitm_model.joblib",
-            models_dir / "c2c_model.joblib",
+            models_joblib_dir / "ddos_model.joblib",
+            models_joblib_dir / "mitm_model.joblib",
+            models_joblib_dir / "c2c_model.joblib",
         ]
         
         if not all(f.exists() for f in model_files):
@@ -151,7 +154,7 @@ def main() -> None:
             subprocess.run(
                 [
                     sys.executable,
-                    str(models_dir / "make_dummy_models.py"),
+                    str(models_base_dir / "make_dummy_models.py"),
                 ],
                 check=True,
             )
