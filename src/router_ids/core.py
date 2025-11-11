@@ -1,22 +1,20 @@
 """
 Core manager for coordinating packet parsing, feature extraction, and model execution.
-
-Coordinates the detection pipeline:
-1. Parse pcap file and extract packets
-2. Run single-pass feature extraction (once per interval)
-3. Check human-editable rules to decide which models to run
-4. Execute selected models and aggregate results
 """
 
+import datetime
 import logging
 import os
+import subprocess
+import threading
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable
 
 import yaml
 
 from .features.base import FeatureExtractor
-from .features.extractor import BasicFeatureExtractor
+from .features.pcap_parser import parse_pcap
 from .models.model_runner import ModelRunner
 from .utils.logger import setup_logger
 
@@ -25,11 +23,12 @@ logger = logging.getLogger(__name__)
 
 class CoreManager:
     """
-    Main orchestrator for intrusion detection on a Raspberry Pi router.
+    Main orchestrator for intrusion detection.
 
-    Accepts a pcap file captured by tcpdump, performs single-pass feature
-    extraction, checks rules to decide which models to invoke, and returns
-    structured detection results.
+    Can be used in two modes:
+    1. Single Run: Process a pre-existing pcap file with `run_once()`.
+    2. Continuous Monitoring: Actively capture and analyze traffic in a loop
+       using `start_monitoring()`.
     """
 
     def __init__(
@@ -37,36 +36,141 @@ class CoreManager:
         rules_path: Optional[str] = None,
         thresholds_path: Optional[str] = None,
         models_dir: Optional[str] = None,
+        interface: str = "eth0",
+        capture_duration: int = 30,
+        monitor_interval: int = 60,
     ):
         """
         Initialize CoreManager.
 
         Args:
-            rules_path: Path to rules.yaml file
-            thresholds_path: Path to thresholds.yaml file
-            models_dir: Directory containing serialized models
+            rules_path: Path to rules.yaml file.
+            thresholds_path: Path to thresholds.yaml file.
+            models_dir: Directory containing serialized models.
+            interface: Default network interface for continuous monitoring.
+            capture_duration: How many seconds to capture traffic for in each cycle.
+            monitor_interval: How many seconds to wait between captures.
         """
         self.logger = setup_logger(__name__)
-        
+
+        # Configuration for continuous monitoring
+        self.interface = interface
+        self.capture_duration = capture_duration
+        self.monitor_interval = monitor_interval
+        self.pcap_file = "/tmp/router_ids_capture.pcap"
+
+        # State for monitoring thread
+        self._is_monitoring = False
+        self._monitoring_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+
         # Default paths relative to this module
         base_dir = Path(__file__).parent.parent.parent
         self.rules_path = rules_path or str(base_dir / "rules" / "rules.yaml")
-        self.thresholds_path = (
-            thresholds_path or str(base_dir / "rules" / "thresholds.yaml")
-        )
+        self.thresholds_path = thresholds_path or str(base_dir / "rules" / "thresholds.yaml")
         self.models_dir = models_dir or str(base_dir / "src" / "router_ids" / "models" / "model_joblib")
 
-        # Load configuration
         self.rules = self._load_yaml(self.rules_path)
         self.thresholds = self._load_yaml(self.thresholds_path)
-
-        # Registry of detectors: {detector_name: (feature_extractor, model_runner)}
         self.detectors: Dict[str, Tuple[FeatureExtractor, Optional[ModelRunner]]] = {}
-
-        # Register default detectors
         self._register_default_detectors()
-
         self.logger.info("CoreManager initialized")
+
+    def start_monitoring(self, callback: Optional[Callable[[Dict], None]] = None) -> None:
+        """
+        Starts continuous network monitoring in a background thread.
+
+        This will repeatedly capture traffic, run analysis, and execute a
+        callback function with the results.
+
+        Args:
+            callback: A function to call with the results after each cycle.
+                      If None, results will be logged.
+        """
+        if self._is_monitoring:
+            self.logger.warning("Monitoring is already running.")
+            return
+
+        self.logger.info(f"Starting continuous monitoring on interface '{self.interface}'...")
+        self._is_monitoring = True
+        self._stop_event.clear()
+        
+        self._monitoring_thread = threading.Thread(
+            target=self._monitoring_loop, args=(callback,), daemon=True
+        )
+        self._monitoring_thread.start()
+
+    def stop_monitoring(self) -> None:
+        """Stops the continuous network monitoring."""
+        if not self._is_monitoring:
+            self.logger.warning("Monitoring is not running.")
+            return
+
+        self.logger.info("Stopping continuous monitoring...")
+        self._stop_event.set()
+        if self._monitoring_thread:
+            self._monitoring_thread.join(timeout=self.capture_duration + 5)
+        
+        self._is_monitoring = False
+        self.logger.info("Monitoring stopped.")
+        # Clean up the last pcap file
+        if os.path.exists(self.pcap_file):
+            os.remove(self.pcap_file)
+            self.logger.debug(f"Cleaned up {self.pcap_file}")
+
+    def _monitoring_loop(self, callback: Optional[Callable[[Dict], None]]) -> None:
+        """The main loop for capturing and analyzing traffic."""
+        while not self._stop_event.is_set():
+            self.logger.info(f"Starting new capture cycle for {self.capture_duration}s.")
+            
+            # Step 1: Capture traffic
+            capture_success = self._capture_traffic(self.pcap_file)
+            
+            if capture_success:
+                # Step 2: Run detection
+                self.logger.info("Capture complete. Running detection...")
+                results = self.run_once(self.pcap_file)
+                
+                # Step 3: Handle results via callback
+                if callback:
+                    try:
+                        callback(results)
+                    except Exception as e:
+                        self.logger.error(f"Error in results callback: {e}")
+                else:
+                    self.logger.info(f"Detection results: {results}")
+            else:
+                self.logger.error("Traffic capture failed. Will retry after interval.")
+
+            # Step 4: Wait for the next cycle
+            self.logger.info(f"Cycle complete. Waiting for {self.monitor_interval}s.")
+            self._stop_event.wait(self.monitor_interval)
+
+    def _capture_traffic(self, output_file: str) -> bool:
+        """Captures network traffic using tcpdump."""
+        try:
+            cmd = [
+                "tcpdump", "-i", self.interface, "-G",
+                str(self.capture_duration), "-w", output_file,
+            ]
+            self.logger.debug(f"Executing tcpdump command: {' '.join(cmd)}")
+            result = subprocess.run(
+                cmd, timeout=self.capture_duration + 5,
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                self.logger.error(f"tcpdump failed with code {result.returncode}: {result.stderr}")
+                return False
+            return True
+        except FileNotFoundError:
+            self.logger.error("`tcpdump` command not found. Please install it and ensure it's in your PATH.")
+            return False
+        except subprocess.TimeoutExpired:
+            self.logger.warning("tcpdump process timed out. A pcap file might still be generated.")
+            return os.path.exists(output_file)
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred during traffic capture: {e}")
+            return False
 
     def _load_yaml(self, path: str) -> Dict[str, Any]:
         """Load YAML configuration file."""
@@ -242,77 +346,46 @@ class CoreManager:
             results["errors"].append(msg)
             return results
 
-        # Step 2: Run feature extraction for each registered detector
         detector_features = {}
         for detector_name, (extractor, _) in self.detectors.items():
             try:
                 features = extractor.extract(packets)
                 detector_features[detector_name] = features
-                self.logger.debug(f"{detector_name} features: {features}")
             except Exception as e:
                 msg = f"Error extracting features for {detector_name}: {e}"
                 self.logger.error(msg)
                 results["errors"].append(msg)
 
-        # Step 3: Check pre-check rules and invoke models
         for detector_name, (_, model_runner) in self.detectors.items():
             try:
                 features = detector_features.get(detector_name, {})
-
-                # Check if detector is enabled
-                if detector_name not in self.rules:
-                    self.logger.debug(f"Detector {detector_name} not in rules, skipping")
+                if detector_name not in self.rules or not self.rules[detector_name].get("enabled", True):
                     continue
 
-                if not self.rules[detector_name].get("enabled", True):
-                    self.logger.debug(f"Detector {detector_name} disabled, skipping")
-                    continue
-
-                # Check pre-check rules
                 if not self._check_pre_rules(detector_name, features):
-                    self.logger.debug(
-                        f"Pre-checks failed for {detector_name}, skipping model"
-                    )
                     results["detections"][detector_name] = {
-                        "detected": False,
-                        "score": 0.0,
-                        "label": "benign",
-                        "raw": features,
-                        "reason": "pre-check_failed",
+                        "detected": False, "score": 0.0, "label": "benign",
+                        "raw": features, "reason": "pre-check_failed",
                     }
                     continue
 
-                # Run model if pre-checks pass and model is available
                 if model_runner is None:
-                    self.logger.warning(
-                        f"Model runner not available for {detector_name}"
-                    )
                     results["detections"][detector_name] = {
-                        "detected": False,
-                        "score": 0.0,
-                        "label": "benign",
-                        "raw": features,
-                        "reason": "model_not_available",
+                        "detected": False, "score": 0.0, "label": "benign",
+                        "raw": features, "reason": "model_not_available",
                     }
                     continue
 
                 prediction = model_runner.predict(features)
                 results["detections"][detector_name] = prediction
-                self.logger.info(
-                    f"{detector_name} detection: {prediction['detected']}, "
-                    f"score: {prediction['score']}"
-                )
-
             except Exception as e:
                 msg = f"Error running detector {detector_name}: {e}"
                 self.logger.error(msg)
                 results["errors"].append(msg)
                 results["detections"][detector_name] = {
-                    "detected": False,
-                    "score": 0.0,
-                    "label": "error",
-                    "raw": {},
-                    "reason": str(e),
+                    "detected": False, "score": 0.0, "label": "error",
+                    "raw": {}, "reason": str(e),
                 }
 
         return results
+    
