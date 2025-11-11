@@ -8,10 +8,10 @@ ddos:
   unique_src_ips_threshold: 50
 
 mitm:
-  # Trigger MITM model if ARP request ratio exceeds this
-  arp_request_ratio_threshold: 0.5
-  # Or if MAC-IP mismatches exceed this
-  mac_ip_mismatch_threshold: 10
+  # These are the pre-filter rules from your script.
+  # The model will only run if one of these conditions is met.
+  min_mismatch_count: 1
+  min_packet_rate: 0.005
 
 c2c:
   # Trigger C2C model if average flow duration exceeds this (packets)

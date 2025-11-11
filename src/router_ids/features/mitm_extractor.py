@@ -1,124 +1,102 @@
-"""Feature extractor for MITM (Man-in-the-Middle) detection."""
+"""
+Feature extractor for the custom multi-class MITM model.
+"""
 
 import logging
-from collections import Counter
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
-from scapy.layers.inet import IP
 from scapy.layers.l2 import ARP, Ether
+
+from .base import FeatureExtractor
 
 logger = logging.getLogger(__name__)
 
 
-class MITMFeatureExtractor:
+class MITMFeatureExtractor(FeatureExtractor):
     """
-    Extract MITM-relevant features.
+    Extracts features compatible with the custom Random Forest MITM model.
 
-    MITM indicators:
-    - ARP spoofing: Multiple MACs claiming same IP
-    - Unusual ARP patterns: High ratio of ARP requests
-    - MAC flapping: Frequent MAC address changes
-    - Gratuitous ARP activity
+    The 8 features are:
+    - mac_ip_inconsistency: Count of IPs associated with more than one MAC address.
+    - packet_in_count: Total number of packets in the capture window.
+    - packet_rate: Packets per second.
+    - rtt (avg): Average Round Trip Time. (NOTE: Placeholder, not implemented)
+    - is_broadcast: 1 if broadcast packets are present, 0 otherwise.
+    - arp_request: 1 if ARP requests are present, 0 otherwise.
+    - arp_reply: 1 if ARP replies are present, 0 otherwise.
+    - op_code(arp): Op-code of the first ARP packet found (1 for request, 2 for reply).
     """
 
     def extract(self, packets: List[Any]) -> Dict[str, Any]:
-        """Extract MITM-specific features."""
+        """Extract MITM-specific features from a list of scapy packets."""
         if not packets:
             return self._empty_features()
 
-        arp_requests = 0
-        arp_replies = 0
-        arp_gratuitous = 0
-        mac_ip_pairs: Dict[str, set] = {}  # IP -> set of MACs
-        ip_mac_pairs: Dict[str, set] = {}  # MAC -> set of IPs
-        arp_src_ips: Counter = Counter()
-        
+        # --- Base Metrics ---
+        packet_in_count = len(packets)
+        try:
+            duration = float(packets[-1].time - packets[0].time)
+            if duration == 0: duration = 1.0
+        except (AttributeError, IndexError):
+            duration = 1.0
+        packet_rate = packet_in_count / duration
+
+        # --- Feature Extraction Loop ---
+        mac_ip_pairs: Dict[str, set] = {}
+        broadcast_count = 0
+        arp_request_count = 0
+        arp_reply_count = 0
+        first_arp_opcode = 0
+
         for pkt in packets:
-            try:
-                # Track ARP layer
-                if ARP in pkt:
-                    if pkt[ARP].op == 1:  # ARP Request
-                        arp_requests += 1
-                        arp_src_ips[pkt[ARP].psrc] += 1
-                        # Gratuitous ARP: sender IP == target IP
-                        if pkt[ARP].psrc == pkt[ARP].pdst:
-                            arp_gratuitous += 1
-                    elif pkt[ARP].op == 2:  # ARP Reply
-                        arp_replies += 1
-                        arp_src_ips[pkt[ARP].psrc] += 1
+            # is_broadcast
+            if Ether in pkt and pkt[Ether].dst == "ff:ff:ff:ff:ff:ff":
+                broadcast_count += 1
 
-                    # Track MAC-IP associations
-                    src_mac = pkt[ARP].hwsrc
-                    src_ip = pkt[ARP].psrc
-                    
-                    if src_ip not in mac_ip_pairs:
-                        mac_ip_pairs[src_ip] = set()
-                    mac_ip_pairs[src_ip].add(src_mac)
-                    
-                    if src_mac not in ip_mac_pairs:
-                        ip_mac_pairs[src_mac] = set()
-                    ip_mac_pairs[src_mac].add(src_ip)
+            # ARP-related features
+            if ARP in pkt:
+                # op_code(arp) - capture the first one we see
+                if first_arp_opcode == 0:
+                    first_arp_opcode = pkt[ARP].op
+                
+                # arp_request / arp_reply
+                if pkt[ARP].op == 1:
+                    arp_request_count += 1
+                elif pkt[ARP].op == 2:
+                    arp_reply_count += 1
 
-                # Also track Ethernet + IP combinations
-                if Ether in pkt and IP in pkt:
-                    eth_src = pkt[Ether].src
-                    ip_src = pkt[IP].src
-                    
-                    if ip_src not in mac_ip_pairs:
-                        mac_ip_pairs[ip_src] = set()
-                    mac_ip_pairs[ip_src].add(eth_src)
+                # mac_ip_inconsistency
+                src_mac = pkt[ARP].hwsrc
+                src_ip = pkt[ARP].psrc
+                if src_ip not in mac_ip_pairs:
+                    mac_ip_pairs[src_ip] = set()
+                mac_ip_pairs[src_ip].add(src_mac)
 
-            except Exception as e:
-                logger.debug(f"Error processing packet: {e}")
-                continue
-
-        num_packets = len(packets)
-        arp_total = arp_requests + arp_replies
-
-        # Calculate MITM indicators
-        arp_request_ratio = (
-            arp_requests / arp_total if arp_total > 0 else 0
-        )
-
-        # MAC-IP mismatch count: IPs with multiple MACs
-        mac_ip_mismatch_count = sum(
-            1 for macs in mac_ip_pairs.values() if len(macs) > 1
-        )
-
-        # IP-MAC mismatch count: MACs with multiple IPs
-        ip_mac_mismatch_count = sum(
-            1 for ips in ip_mac_pairs.values() if len(ips) > 1
-        )
-
-        # Gratuitous ARP ratio
-        gratuitous_ratio = (
-            arp_gratuitous / arp_total if arp_total > 0 else 0
-        )
+        # --- Final Feature Calculations ---
+        mac_ip_inconsistency = sum(1 for macs in mac_ip_pairs.values() if len(macs) > 1)
+        
+        # NOTE: Calculating RTT from passive captures is complex and unreliable.
+        # This is a placeholder as the model requires it. In a real scenario,
+        # this would need a more sophisticated calculation (e.g., tracking TCP sequence numbers).
+        rtt_avg = 0.0
 
         features = {
-            "arp_requests": arp_requests,
-            "arp_replies": arp_replies,
-            "arp_gratuitous": arp_gratuitous,
-            "arp_request_ratio": arp_request_ratio,
-            "arp_total": arp_total,
-            "mac_ip_mismatch_count": mac_ip_mismatch_count,
-            "ip_mac_mismatch_count": ip_mac_mismatch_count,
-            "gratuitous_ratio": gratuitous_ratio,
-            "unique_arp_sources": len(arp_src_ips),
+            'mac_ip_inconsistency': mac_ip_inconsistency,
+            'packet_in_count': packet_in_count,
+            'packet_rate': packet_rate,
+            'rtt (avg)': rtt_avg,
+            'is_broadcast': 1 if broadcast_count > 0 else 0,
+            'arp_request': 1 if arp_request_count > 0 else 0,
+            'arp_reply': 1 if arp_reply_count > 0 else 0,
+            'op_code(arp)': first_arp_opcode,
         }
-
         return features
 
     def _empty_features(self) -> Dict[str, Any]:
-        """Return zero-valued features."""
+        """Return zero-valued features for an empty packet list."""
         return {
-            "arp_requests": 0,
-            "arp_replies": 0,
-            "arp_gratuitous": 0,
-            "arp_request_ratio": 0.0,
-            "arp_total": 0,
-            "mac_ip_mismatch_count": 0,
-            "ip_mac_mismatch_count": 0,
-            "gratuitous_ratio": 0.0,
-            "unique_arp_sources": 0,
+            'mac_ip_inconsistency': 0, 'packet_in_count': 0,
+            'packet_rate': 0.0, 'rtt (avg)': 0.0,
+            'is_broadcast': 0, 'arp_request': 0,
+            'arp_reply': 0, 'op_code(arp)': 0,
         }

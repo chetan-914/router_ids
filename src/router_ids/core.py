@@ -194,26 +194,48 @@ class CoreManager:
         from .models.mitm_model import MITMModelRunner
         from .models.c2c_model import C2CModelRunner
 
-        extractors = [
-            ("ddos", DDoSFeatureExtractor()),
-            ("mitm", MITMFeatureExtractor()),
-            ("c2c", C2CFeatureExtractor()),
-        ]
-
-        for name, extractor in extractors:
-            model_file = os.path.join(self.models_dir, f"{name}_model.joblib")
+        # --- Register DDoS Detector ---
+        ddos_extractor = DDoSFeatureExtractor()
+        ddos_model_file = os.path.join(self.models_dir, "ddos_model.joblib")
+        ddos_runner = None
+        if os.path.exists(ddos_model_file):
             try:
-                runner = (
-                    eval(f"{name.upper()}ModelRunner")(model_file)
-                    if os.path.exists(model_file)
-                    else None
-                )
+                ddos_runner = DDoSModelRunner(ddos_model_file)
             except Exception as e:
-                self.logger.warning(f"Failed to load model runner for {name}: {e}")
-                runner = None
+                self.logger.warning(f"Failed to load DDoS model runner: {e}")
+        else:
+            self.logger.warning("DDoS model file not found. DDoS model detection will be disabled.")
+        self.detectors["ddos"] = (ddos_extractor, ddos_runner)
+        self.logger.info("Registered detector: ddos")
 
-            self.detectors[name] = (extractor, runner)
-            self.logger.info(f"Registered detector: {name}")
+        # --- Register MITM Detector ---
+        mitm_extractor = MITMFeatureExtractor()
+        mitm_model_file = os.path.join(self.models_dir, "mitm_model.joblib")
+        mitm_scaler_file = os.path.join(self.models_dir, "mitm_scaler.joblib")
+        mitm_runner = None
+        if os.path.exists(mitm_model_file) and os.path.exists(mitm_scaler_file):
+            try:
+                mitm_runner = MITMModelRunner(mitm_model_file, mitm_scaler_file)
+            except Exception as e:
+                self.logger.warning(f"Failed to load custom MITM model runner: {e}")
+        else:
+            self.logger.warning("MITM model or scaler file not found. MITM model detection will be disabled.")
+        self.detectors["mitm"] = (mitm_extractor, mitm_runner)
+        self.logger.info("Registered detector: mitm")
+        
+        # --- Register C2C Detector ---
+        c2c_extractor = C2CFeatureExtractor()
+        c2c_model_file = os.path.join(self.models_dir, "c2c_model.joblib")
+        c2c_runner = None
+        if os.path.exists(c2c_model_file):
+            try:
+                c2c_runner = C2CModelRunner(c2c_model_file)
+            except Exception as e:
+                self.logger.warning(f"Failed to load C2C model runner: {e}")
+        else:
+            self.logger.warning("C2C model file not found. C2C model detection will be disabled.")
+        self.detectors["c2c"] = (c2c_extractor, c2c_runner)
+        self.logger.info("Registered detector: c2c")
 
     def register_detector(
         self,
@@ -251,12 +273,14 @@ class CoreManager:
             return True
 
         if detector_name not in self.thresholds:
+            # If no thresholds are defined for this detector, assume pre-checks pass
             return True
 
         thresholds = self.thresholds[detector_name]
 
-        # Detector-specific rule checks
+        # --- DDoS Pre-Checks ---
         if detector_name == "ddos":
+            # NOTE: These feature names are from the original project's DDoS extractor
             packet_rate = features.get("packet_rate", 0)
             if packet_rate > thresholds.get("packet_rate_threshold", 10000):
                 self.logger.debug(
@@ -271,22 +295,21 @@ class CoreManager:
                 return True
             return False
 
+        # --- Custom MITM Pre-Checks ---
         elif detector_name == "mitm":
-            arp_ratio = features.get("arp_request_ratio", 0)
-            if arp_ratio > thresholds.get("arp_request_ratio_threshold", 1.0):
-                self.logger.debug(f"MITM pre-check passed: arp_ratio={arp_ratio}")
+            mismatch_count = features.get("mac_ip_inconsistency", 0)
+            if mismatch_count >= thresholds.get("min_mismatch_count", 1):
+                self.logger.debug(f"MITM pre-check passed: mismatch_count={mismatch_count}")
                 return True
-            mac_ip_mismatches = features.get("mac_ip_mismatch_count", 0)
-            if (
-                mac_ip_mismatches
-                > thresholds.get("mac_ip_mismatch_threshold", 100)
-            ):
-                self.logger.debug(
-                    f"MITM pre-check passed: mac_ip_mismatches={mac_ip_mismatches}"
-                )
+            
+            rate = features.get("packet_rate", 0)
+            if rate >= thresholds.get("min_packet_rate", 0.005):
+                self.logger.debug(f"MITM pre-check passed: packet_rate={rate}")
                 return True
+            
             return False
 
+        # --- C2C Pre-Checks ---
         elif detector_name == "c2c":
             avg_duration = features.get("average_flow_duration", 0)
             if avg_duration > thresholds.get("average_flow_duration_threshold", 3600):
