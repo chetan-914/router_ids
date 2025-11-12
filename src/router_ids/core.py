@@ -225,15 +225,23 @@ class CoreManager:
         
         # --- Register C2C Detector ---
         c2c_extractor = C2CFeatureExtractor()
-        c2c_model_file = os.path.join(self.models_dir, "c2c_model.joblib")
+        c2c_model_file = os.path.join(self.models_dir, "c2c_detection_model.joblib")
+        c2c_scaler_file = os.path.join(self.models_dir, "c2_scaler.joblib")
+        c2c_encoder_file = os.path.join(self.models_dir, "c2_encoder.joblib")
+        
         c2c_runner = None
-        if os.path.exists(c2c_model_file):
+        if all(os.path.exists(f) for f in [c2c_model_file, c2c_scaler_file, c2c_encoder_file]):
             try:
-                c2c_runner = C2CModelRunner(c2c_model_file)
+                # Get prediction threshold from thresholds config
+                threshold = self.thresholds.get("c2c", {}).get("prediction_threshold", 0.5)
+                c2c_runner = C2CModelRunner(
+                    c2c_model_file, c2c_scaler_file, c2c_encoder_file, threshold
+                )
             except Exception as e:
                 self.logger.warning(f"Failed to load C2C model runner: {e}")
         else:
-            self.logger.warning("C2C model file not found. C2C model detection will be disabled.")
+            self.logger.warning("One or more C2C model files not found. C2C detection will be disabled.")
+        
         self.detectors["c2c"] = (c2c_extractor, c2c_runner)
         self.logger.info("Registered detector: c2c")
 

@@ -14,7 +14,11 @@ mitm:
   min_packet_rate: 0.005
 
 c2c:
-  # Trigger C2C model if average flow duration exceeds this (packets)
+  # Pre-check rules (can be tuned later)
   average_flow_duration_threshold: 300
-  # Or if unique destination ports exceed this
   unique_dst_ports_threshold: 10
+  
+  # Threshold for the final model prediction. If the malicious probability
+  # from the model is above this value, an attack is flagged.
+  # Value from your model_metadata.json, but can be adjusted here.
+  prediction_threshold: 0.145

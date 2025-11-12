@@ -15,8 +15,7 @@ import joblib
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
-
-# Assumes ddos_detector.py is in the same directory
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from .ddos_detector import DDoSDetector
 
 
@@ -72,36 +71,47 @@ def generate_dummy_mitm_model(output_dir: str) -> None:
     print(f"Generated MITM model and scaler in: {output_dir}")
 
 
-def generate_dummy_c2c_model(output_path: str) -> None:
-    """Generate dummy C2C detection model."""
-    print("--- Generating dummy C2C model ---")
+def generate_dummy_c2c_model(output_dir: str) -> None:
+    """
+    Generate a dummy C2C model, scaler, and encoder.
+    Saves three files.
+    """
+    print("--- Generating dummy C2C model, scaler, and encoder ---")
     np.random.seed(42)
-    n_samples = 100
+    n_samples = 200
+
+    # --- Generate dummy raw categorical data ---
+    protos = np.random.choice(['tcp', 'udp', 'icmp'], n_samples)
+    services = np.random.choice(['http', 'dns', 'unknown', 'ssl'], n_samples)
+    conn_states = np.random.choice(['SF', 'S0', 'REJ', 'OTH'], n_samples)
+    histories = np.random.choice(['S', 'SA', 'D', 'DF'], n_samples)
+    categorical_data = np.vstack([protos, services, conn_states, histories]).T
+
+    # --- Train Encoder ---
+    encoder = OneHotEncoder(handle_unknown='ignore')
+    encoder.fit(categorical_data)
+    encoded_categorical = encoder.transform(categorical_data).toarray()
     
-    # C2C features: num_flows, average_flow_packets, max_flow_packets,
-    #               unique_dst_ports, unique_src_ports, long_lived_flows,
-    #               non_standard_dst_ports, flow_packet_variance
-    X_benign = np.random.normal(
-        loc=[50, 5, 20, 10, 30, 5, 8, 100],
-        scale=[20, 2, 10, 5, 10, 2, 4, 50],
-        size=(n_samples // 2, 8),
-    )
-    X_attack = np.random.normal(
-        loc=[10, 50, 100, 5, 5, 8, 3, 20],
-        scale=[5, 20, 30, 2, 2, 2, 2, 10],
-        size=(n_samples // 2, 8),
-    )
+    # --- Generate dummy raw numeric data ---
+    # Based on the 14 numeric features in the pipeline
+    numeric_data = np.random.rand(n_samples, 14)
+    y = np.random.randint(0, 2, n_samples) # Random labels (0 or 1)
     
-    X = np.vstack([X_benign, X_attack])
-    y = np.hstack([np.zeros(n_samples // 2), np.ones(n_samples // 2)])
-    
-    # Train model
+    # --- Train Scaler ---
+    scaler = StandardScaler()
+    scaler.fit(numeric_data)
+
+    # --- Train Model ---
+    # Combine processed features to create training data for the model
+    X = np.hstack([numeric_data, encoded_categorical])
     model = RandomForestClassifier(n_estimators=10, random_state=42)
     model.fit(X, y)
     
-    # Save model
-    joblib.dump(model, output_path)
-    print(f"Generated C2C model: {output_path}")
+    # --- Save Artifacts ---
+    joblib.dump(model, os.path.join(output_dir, "c2c_detection_model.joblib"))
+    joblib.dump(scaler, os.path.join(output_dir, "c2_scaler.joblib"))
+    joblib.dump(encoder, os.path.join(output_dir, "c2_encoder.joblib"))
+    print(f"Generated C2C artifacts in: {output_dir}")
 
 
 def main() -> None:
@@ -116,7 +126,7 @@ def main() -> None:
     # Generate all models, passing the correct paths
     generate_dummy_ddos_model(str(output_dir / "ddos_model.joblib"))
     generate_dummy_mitm_model(str(output_dir))
-    generate_dummy_c2c_model(str(output_dir / "c2c_model.joblib"))
+    generate_dummy_c2c_model(str(output_dir))
     
     print("\nAll dummy models generated successfully!")
 
