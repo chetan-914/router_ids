@@ -147,27 +147,47 @@ class CoreManager:
             self._stop_event.wait(self.monitor_interval)
 
     def _capture_traffic(self, output_file: str) -> bool:
-        """Captures network traffic using tcpdump."""
+        """
+        Captures network traffic using tcpdump, wrapped by the timeout command
+        for robust termination.
+        """
         try:
+            # We use the 'timeout' utility to ensure tcpdump stops cleanly.
             cmd = [
-                "tcpdump", "-i", self.interface, "-G",
-                str(self.capture_duration), "-w", output_file,
+                "timeout",
+                str(self.capture_duration),
+                "tcpdump",
+                "-i", self.interface,
+                "-U",  # Use packet-buffering to ensure data is written
+                "-w", output_file,
             ]
-            self.logger.debug(f"Executing tcpdump command: {' '.join(cmd)}")
+            self.logger.debug(f"Executing command: {' '.join(cmd)}")
+
+            # The subprocess timeout is a failsafe, slightly longer than the command's timeout
             result = subprocess.run(
                 cmd, timeout=self.capture_duration + 5,
                 capture_output=True, text=True
             )
-            if result.returncode != 0:
-                self.logger.error(f"tcpdump failed with code {result.returncode}: {result.stderr}")
+
+            # A return code of 124 from 'timeout' means it successfully timed out and stopped the command.
+            # A return code of 0 means tcpdump finished before the timeout. Both are success cases for us.
+            if result.returncode == 0 or result.returncode == 124:
+                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                    return True
+                else:
+                    self.logger.error(f"tcpdump exited cleanly, but the output file '{output_file}' is empty or missing.")
+                    self.logger.error(f"tcpdump stderr: {result.stderr}")
+                    return False
+            else:
+                self.logger.error(f"Command failed with return code {result.returncode}: {result.stderr}")
                 return False
-            return True
+
         except FileNotFoundError:
-            self.logger.error("`tcpdump` command not found. Please install it and ensure it's in your PATH.")
+            self.logger.error("`tcpdump` or `timeout` command not found. Please ensure both are installed and in your PATH.")
             return False
         except subprocess.TimeoutExpired:
-            self.logger.warning("tcpdump process timed out. A pcap file might still be generated.")
-            return os.path.exists(output_file)
+            self.logger.error("The subprocess monitor itself timed out. This should not happen.")
+            return False
         except Exception as e:
             self.logger.error(f"An unexpected error occurred during traffic capture: {e}")
             return False
