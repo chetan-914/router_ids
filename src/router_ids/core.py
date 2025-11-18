@@ -245,7 +245,7 @@ class CoreManager:
         
         # --- Register C2C Detector ---
         c2c_extractor = C2CFeatureExtractor()
-        c2c_model_file = os.path.join(self.models_dir, "c2c_detection_model.joblib")
+        c2c_model_file = os.path.join(self.models_dir, "c2c_model.joblib")
         c2c_scaler_file = os.path.join(self.models_dir, "c2_scaler.joblib")
         c2c_encoder_file = os.path.join(self.models_dir, "c2_encoder.joblib")
         
@@ -309,13 +309,13 @@ class CoreManager:
         # --- DDoS Pre-Checks ---
         if detector_name == "ddos":
             # NOTE: These feature names are from the original project's DDoS extractor
-            packet_rate = features.get("packet_rate", 0)
+            packet_rate = features.get("Packet_Per_Sec", 0)
             if packet_rate > thresholds.get("packet_rate_threshold", 10000):
                 self.logger.debug(
                     f"DDoS pre-check passed: packet_rate={packet_rate}"
                 )
                 return True
-            unique_srcs = features.get("unique_src_ips", 0)
+            unique_srcs = features.get("Unique_IPs", 0)
             if unique_srcs > thresholds.get("unique_src_ips_threshold", 1000):
                 self.logger.debug(
                     f"DDoS pre-check passed: unique_srcs={unique_srcs}"

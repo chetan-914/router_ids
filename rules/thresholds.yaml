@@ -5,7 +5,7 @@ ddos:
   # Trigger DDoS model if packet rate exceeds this (packets per interval)
   packet_rate_threshold: 1000
   # Or if unique source IPs exceed this
-  unique_src_ips_threshold: 50
+  unique_src_ips_threshold: 1
 
 mitm:
   # These are the pre-filter rules from your script.
